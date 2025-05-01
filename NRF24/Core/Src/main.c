@@ -21,6 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 #include "NRF24.h"
 #include "NRF24_reg_addresses.h"
@@ -35,12 +37,11 @@
 /* USER CODE BEGIN PD */
 #define PLD_SIZE 32
 
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+#define _BV(x) (1 << (x))
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -49,7 +50,14 @@ SPI_HandleTypeDef hspi1;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+uint8_t addr[5]={0xE1, 0xF0, 0xF0, 0xE8, 0xE8};
 
+typedef struct{
+  uint16_t x;
+  uint16_t y;
+} mensaje_t;
+
+mensaje_t mensaje;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -58,7 +66,75 @@ static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
+bool NRF24_Init(void){
+	ce_low();
+	csn_high();
 
+	HAL_Delay(5);
+
+	// Velocidad inicial confiable (1 Mbps)
+	nrf24_data_rate(_1mbps);
+
+    // Deshabilitar ACK payload y payload dinámico por defecto
+	nrf24_en_ack_pld(disable);
+	nrf24_en_dyn_ack(disable);
+	nrf24_dpl(disable);
+
+    // Habilitar auto-ack en todos los pipes (puede ajustarse)
+	nrf24_auto_ack_all(enable);
+
+    // Habilitar solo pipes RX 0 y 1 por defecto
+	nrf24_open_rx_pipe(0, addr);
+	nrf24_open_rx_pipe(1, addr);
+//	uint8_t data = 0x03
+//	nrf24_w_reg(EN_RXADDR, data, sizeof(data));
+
+    // Tamaño fijo de payload (por defecto 32 bytes)
+	nrf24_pipe_pld_size(0, PLD_SIZE);
+	nrf24_pipe_pld_size(1, PLD_SIZE);
+	nrf24_pipe_pld_size(2, PLD_SIZE);
+	nrf24_pipe_pld_size(3, PLD_SIZE);
+	nrf24_pipe_pld_size(4, PLD_SIZE);
+	nrf24_pipe_pld_size(5, PLD_SIZE);
+
+    // Ancho de dirección: 5 bytes (máximo permitido)
+	nrf24_set_addr_width(5);
+
+	// Canal por defecto (76 → dentro de ISM band y sin interferencia típica)
+	nrf24_set_channel(76);
+
+    // Limpiar flags de status
+	nrf24_clear_max_rt();
+	nrf24_clear_rx_dr();
+	nrf24_clear_tx_ds();
+
+    // Flush buffers
+	nrf24_flush_rx();
+	nrf24_flush_tx();
+
+	//Para debug
+	uint8_t CONFIG_reg = nrf24_r_reg(CONFIG, 1);
+
+    // Configurar registro CONFIG:
+    // - CRC de 2 bytes (CRCO)
+    // - CRC habilitado (EN_CRC)
+    // - Power Up (PWR_UP)
+    // - Modo PTX (PRIM_RX = 0)
+	nrf24_set_crc(en_crc, _2byte);
+	nrf24_pwr_up();
+	// Pongo en Modo PTX (PRIM_RX = 0)
+	nrf24_set_bit(CONFIG, 0, 0);
+
+	//Para debug
+	CONFIG_reg = nrf24_r_reg(CONFIG, 1);
+
+    // Delay de power-up a standby (~1.5ms recomendado)
+    HAL_Delay(2);
+
+    // Verificación de escritura de CONFIG
+    return (nrf24_r_reg(CONFIG, 1) == (_BV(EN_CRC) | _BV(CRCO) | _BV(PWR_UP))) ? true : false;
+
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -98,6 +174,23 @@ int main(void)
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  if (NRF24_Init() == 0) {
+    char buffer[100];
+	snprintf(buffer,sizeof(buffer),"Error al iniciar la radio.\n");
+	HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+  }
+  else{
+	    char buffer[100];
+		snprintf(buffer,sizeof(buffer),"Radio Iniciada.\n");
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+  }
+
+  //radio.setDataRate(RF24_250KBPS);
+  nrf24_data_rate(_250kbps);
+  //radio.openReadingPipe(1, direccion);
+  nrf24_open_rx_pipe(1, addr);
+  //radio.startListening();
+  nrf24_listen();
 
   /* USER CODE END 2 */
 
@@ -105,6 +198,30 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+//	if (radio.available()) {
+//	  radio.read(&mensaje, sizeof(mensaje));
+//	  Serial.print("\nCoord X: ");
+//	  Serial.print((int)mensaje.x);
+//	  Serial.print("\tCoord Y: ");
+//	  Serial.print((int)mensaje.y);
+//	}
+	if (nrf24_data_available()) {
+	  //radio.read(&mensaje, sizeof(mensaje));
+		uint8_t rx_buffer[sizeof(mensaje_t)];
+
+		nrf24_receive(rx_buffer, sizeof(mensaje_t));
+
+		mensaje.x = (rx_buffer[1] << 8) | rx_buffer[0];
+		mensaje.y = (rx_buffer[3] << 8) | rx_buffer[2];
+
+	    char buffer[100];
+		snprintf(buffer,sizeof(buffer),"\nCoord X: %i\tCoord Y: %i",mensaje.x,mensaje.y);
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+
+		nrf24_flush_rx();
+	}
+
+	HAL_Delay(5);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -208,7 +325,7 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.Mode = UART_MODE_TX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
   if (HAL_UART_Init(&huart1) != HAL_OK)
@@ -251,10 +368,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
